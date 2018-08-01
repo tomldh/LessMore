@@ -388,6 +388,27 @@ cv::Mat svd_backward(const std::vector<cv::Mat> &grads, const cv::Mat& self, boo
 	return u_term + sigma_term + v_term;
 }
 
+void matMulDerivWrapper(cv::InputArray _Amat, cv::InputArray _Bmat, cv::OutputArray _dABdA, cv::OutputArray _dABdB)
+{
+	cv::Mat A = _Amat.getMat(), B = _Bmat.getMat();
+
+
+	if (_dABdA.needed())
+	{
+		_dABdA.create(A.rows*B.cols, A.rows*A.cols, A.type());
+	}
+
+	if (_dABdB.needed())
+	{
+		_dABdB.create(A.rows*B.cols, B.rows*B.cols, A.type());
+	}
+
+	CvMat matA = A, matB = B, c_dABdA=_dABdA.getMat(), c_dABdB=_dABdB.getMat();
+
+	cvCalcMatMulDeriv(&matA, &matB, _dABdA.needed() ? &c_dABdA : 0, _dABdB.needed() ? &c_dABdB : 0);
+
+}
+
 /*
  * @brief
  *
@@ -399,35 +420,33 @@ cv::Mat svd_backward(const std::vector<cv::Mat> &grads, const cv::Mat& self, boo
  * @param calc: flag to indicate calcuation of jacobean matrix
  *
  */
-bool kabsch(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Point3f>& objPts, jp::cv_trans_t& extCam, cv::Mat& jacobean, bool calc=false)
+bool kabsch(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Point3f>& objPts, jp::cv_trans_t& extCam, cv::OutputArray _jacobean=cv::noArray())
 {
 
-	cv::Mat P, X, A, U, W, Vt, D, R, V;
-	cv::Mat ctrCoeff, N_inv_1xN, N_inv_NxN, gRodr;
+	cv::Mat P, X, A, U, W, Vt, D, R, V, invN, gRodr;
+
 	cv::Mat& r = extCam.first;
 	cv::Mat& t = extCam.second;
 
 	unsigned int N = objPts.size();
+	bool calc = _jacobean.needed();
+	bool degenerate = false;
 
 	P = cv::Mat(imgdPts, false).reshape(1, N);
 
 	X = cv::Mat(objPts, false).reshape(1, N);
 
-	N_inv_1xN = cv::Mat(1, N, CV_32F, 1.f/N);
+	invN = cv::Mat(1, N, CV_32F, 1.f/N);
 
-	cv::Mat tx = N_inv_1xN * X;
-	cv::Mat tp = N_inv_1xN * P;
+	cv::Mat tx = invN * X;
+	cv::Mat tp = invN * P;
 
-	//ctrCoeff = cv::Mat::eye(N,N, CV_32F) - cv::Mat(N, N, CV_32F, 1.f/N);
-
-	cv::Mat Xc =  X - cv::repeat(tx, N, 1); //ctrCoeff * X;
-	cv::Mat Pc =  P - cv::repeat(tp, N, 1); //ctrCoeff * P;
+	cv::Mat Xc =  X - cv::repeat(tx, N, 1);
+	cv::Mat Pc =  P - cv::repeat(tp, N, 1);
 
 	A = Pc.t() * Xc;
 
 	cv::SVD::compute(A, W, U, Vt);
-
-	bool degenerate = false;
 
 	if ((unsigned int)cv::countNonZero(W) != (unsigned int)W.total())
 		degenerate = true;
@@ -438,7 +457,7 @@ bool kabsch(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Point3f>& objPts,
 		degenerate = true;
 
 	if (calc && degenerate)
-		return true;
+		return false;
 
 	float d = cv::determinant(U * Vt);
 
@@ -449,67 +468,38 @@ bool kabsch(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Point3f>& objPts,
 
 	R = U * (D * Vt);
 
-	if (calc)
-	{
-		cv::Rodrigues(R, r, gRodr);
-	}
-	else
-	{
-		cv::Rodrigues(R, r);
-	}
+	calc ? cv::Rodrigues(R, r, gRodr) : cv::Rodrigues(R, r);
 
-
-	t = tp - (R*tx.t()).t();
+	t = tp - tx * R.t(); //(R*tx.t()).t();
 
 	r = r.reshape(1, 3);
 	t = t.reshape(1, 3);
-//	print("r", r);
-//	print("t", t);
 
 	if (!calc)
 		return true;
 
-	cv::Mat onehot;
-	cv::Mat drdR, dRdU, dRdVt, dRidU, dRidVt, dRidV, dRidA, dAdPct, dAdXc, dRidXc, dRidX, drdX, dtdR, dtdtx, dtdX;
-	cv::Mat dRdX, dtxdX, dtxdninv;//, dXcdcoeff, dXcdX;
+	cv::Mat onehot, dRidU, dRidVt, dRidV, dRidA, dRidXc, dRidX;
+	cv::Mat dRdU, dRdVt, dAdXc, drdX, dtdR, dtdtx, dtdX, dRdX, dtxdX;
+
+	matMulDerivWrapper(U, Vt, dRdU, dRdVt);
+	matMulDerivWrapper(Pc.t(), Xc, cv::noArray(), dAdXc);
+	matMulDerivWrapper(R, tx.t(), dtdR, dtdtx);
+	matMulDerivWrapper(invN, X, cv::noArray(), dtxdX);
 
 	dRdX = cv::Mat_<float>::zeros(9, N * 3);
-	jacobean = cv::Mat_<double>::zeros(6, N * 3);
-
-	cv::matMulDeriv(U, D*Vt, dRdU, dRdVt);
-	cv::matMulDeriv(Pc.t(), Xc, dAdPct, dAdXc);
-	cv::matMulDeriv(R, tx.t(), dtdR, dtdtx);
-	cv::matMulDeriv(N_inv_1xN, X, dtxdninv, dtxdX);
-//	std::cout << ctrCoeff.total() << " "<< X.total() << std::endl;
-//	print("ctrCoeff", ctrCoeff);
-//	print("X", X);
-//	cv::matMulDeriv(ctrCoeff, X, dXcdcoeff, dXcdX);
-
-
-//	print("dtdR", dtdR);
-//	print("dtdtx", dtxdX);
-
-	dRdU = dRdU.t();
-	dRdVt = dRdVt.t();
-//	dAdPct = dAdPct.t();
-	dAdXc = dAdXc.t(); //9x3N->3Nx9
-//	dXcdX = dXcdX.t();
+	_jacobean.create(6, N*3, CV_64F);
+	cv::Mat jacobean = _jacobean.getMat();
 
 	V = Vt.t();
 	W = W.reshape(1, 1);
 
+//	#pragma omp parallel for
 	for (int i = 0; i < 9; ++i)
 	{
-		onehot = cv::Mat::zeros(9, 1, CV_32F);
-		onehot.at<float>(i, 0) = 1;
+		//cv::Mat onehot, dRidU, dRidVt, dRidV, dRidA, dRidXc, dRidX;
 
-		dRidU = dRdU * onehot;
-		dRidVt = dRdVt * onehot;
-
-		dRidU = dRidU.reshape(1, 3);
-		dRidVt = dRidVt.reshape(1, 3);
-
-		dRidVt = D*dRidVt;
+		dRidU = dRdU.row(i).reshape(1, 3);
+		dRidVt = dRdVt.row(i).reshape(1, 3);
 
 		dRidV = dRidVt.t();
 
@@ -517,36 +507,34 @@ bool kabsch(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Point3f>& objPts,
 
 		dRidA = svd_backward(grads, A, true, U, W, V);
 
+		dRidA = dRidA.reshape(1, 1);
 
-		dRidA = dRidA.reshape(1, 9);
+		dRidXc = dRidA * dAdXc;
 
-		dRidXc = dAdXc * dRidA; // 3Nx1
 		dRidXc = dRidXc.reshape(1, N);
 
 		dRidX = cv::Mat::zeros(dRidXc.size(), dRidXc.type());
 
-		for (int m = 0; m < dRidXc.rows; ++m)
+		int bstep = dRidXc.step/CV_ELEM_SIZE(dRidXc.type());
+
+//		#pragma omp parallel for
+		for (int j = 0; j < 3; ++j)
 		{
-			for (int n = 0; n < dRidXc.cols; ++n)
+			float* dcdx = (float*)dRidX.data + j;
+			const float* dxcdx = (const float*)dRidXc.data + j;
+
+			float tmp = 0.f;
+			for (unsigned int k = 0; k < N; ++k)
 			{
-				for (int l = 0; l < dRidXc.rows; ++l)
-				{
+				tmp += dxcdx[k*bstep];
+			}
+			tmp /= N;
 
-					if (l == m)
-					{
-						dRidX.at<float>(m,n) += dRidXc.at<float>(l,n) * (N-1) / N;
-					}
-					else
-					{
-						dRidX.at<float>(m,n) -= dRidXc.at<float>(l,n) / N;
-					}
-
-				}
-
+			for (unsigned int k = 0; k < N; ++k)
+			{
+				dcdx[k*bstep] = dxcdx[k*bstep] - tmp;
 			}
 		}
-
-//		dRidX = dXcdX * dRidXc;
 
 		dRidX = dRidX.reshape(1, 1);
 
@@ -557,11 +545,9 @@ bool kabsch(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Point3f>& objPts,
 
 	drdX.copyTo(jacobean.rowRange(0, 3));
 
-	dtdX = - dtdR * dRdX - dtdtx * dtxdX;
+	dtdX = - (dtdR * dRdX + dtdtx * dtxdX);
 
 	dtdX.copyTo(jacobean.rowRange(3, 6));
-
-//	print("jacobian", jac);
 
 	return true;
 
@@ -583,9 +569,8 @@ cv::Mat_<double> kabsch_fd(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Po
 {
 	cv::Mat_<double> jacobean = cv::Mat_<double>::zeros(6, objPts.size()*3);
 	bool success;
-	cv::Mat jac;
 
-	kabsch(imgdPts, objPts, extCam, jac);
+	kabsch(imgdPts, objPts, extCam);
 
 	for (unsigned int i = 0; i < objPts.size(); ++i)
 	{
@@ -599,7 +584,7 @@ cv::Mat_<double> kabsch_fd(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Po
 			// forward step
 
 			jp::cv_trans_t fStep;
-			success = kabsch(imgdPts, objPts, fStep, jac); //return success flag?
+			success = kabsch(imgdPts, objPts, fStep); //return success flag?
 
 			if(!success)
 				return cv::Mat_<double>::zeros(6, objPts.size() * 3);
@@ -610,7 +595,7 @@ cv::Mat_<double> kabsch_fd(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Po
 
 			// backward step
 			jp::cv_trans_t bStep;
-			success = kabsch(imgdPts, objPts, bStep, jac); //return success flag?
+			success = kabsch(imgdPts, objPts, bStep); //return success flag?
 
 			if(!success)
 				return cv::Mat_<double>::zeros(6, objPts.size() * 3);
@@ -652,11 +637,10 @@ void test_runtime()
 
 	std::vector<unsigned int> powers {2, 4, 6, 8, 10};
 	std::vector<unsigned int> N; //number of points by 2^power
-	unsigned int trials = 50; //number of repetitions per dataset size
+	unsigned int trials = 100; //number of repetitions per dataset size
 
 	cv::Mat angles, trans;
 	Transformation tf(angles, trans);
-//	std::cout << "Transformation set" << std::endl;
 
 	// sum of time for all the trials of each dataset size
 	double sumFdTime = 0, sumAgTime = 0;
@@ -685,10 +669,8 @@ void test_runtime()
 
 		for (unsigned int j = 0; j < trials; ++j)
 		{
-
-
 			auto beginAg = std::chrono::high_resolution_clock::now();
-			kabsch(measurePts, scenePts, extCamAg, jacAg, true);
+			kabsch(measurePts, scenePts, extCamAg, jacAg);
 			auto endAg = std::chrono::high_resolution_clock::now();
 			std::chrono::duration<float> secAg = endAg-beginAg;
 			sumAgTime += secAg.count();
@@ -724,7 +706,7 @@ void test_accuracy()
 
 	std::vector<unsigned int> powers {2, 4, 6, 8, 10};
 	std::vector<unsigned int> N; //number of points by 2^power
-	unsigned int trials = 50; //trials per dataset size
+	unsigned int trials = 100; //trials per dataset size
 	float etol = 1e-3; //error tolerance of results
 	float delta = 0.001f; //step size used in finite difference calculation
 
@@ -770,22 +752,21 @@ void test_accuracy()
 			// create measurements with random rotation and translation
 			measurePts = createMeasurements(scenePts, tf, false);
 //			std::cout << "Mesurements = " << std::endl << " " << measurePts << std::endl;
-
+//
 //			std::cout << "Translation = " << std::endl << " " << tf.getTranslation() << std::endl;
 //			std::cout << "Rotation vector = " << std::endl << " " << tf.getRotationVector() << std::endl;
 //			std::cout << "Rotation angles = " << std::endl << " " << tf.getRotationAngles() << std::endl;
 
 			// run Kabsch with analytical gradients
-			kabsch(measurePts, scenePts, extCamAg, jacAg, true);
+			bool success = kabsch(measurePts, scenePts, extCamAg, jacAg);
 
-			if (extCamAg.first.empty() && extCamAg.second.empty())
+			if (!success)
 			{
 				cntDegen += 1;
 				jacAg = kabsch_fd(measurePts, scenePts, extCamAg, delta);
 			}
 
 			jacFd = kabsch_fd(measurePts, scenePts, extCamFd, delta);
-
 
 //			std::cout << "Estimated rotation vector = " << std::endl << " " << extCamAg.first << std::endl;
 //			std::cout << "Estimated translation vector = " << std::endl << " " << extCamAg.second << std::endl;
@@ -876,9 +857,9 @@ void test_svd_backward()
 
 	std::vector<cv::Mat> grads{gU, gS, gV};
 
-	cv::Mat res = svd_backward(grads, A, true, U, S, V);
+//	cv::Mat res = svd_backward(grads, A, true, U, S, V);
 
-	std::cout << "result: " << std::endl << " " << res << std::endl;
+//	std::cout << "result: " << std::endl << " " << res << std::endl;
 }
 
 void test_mm_backward()
@@ -915,71 +896,5 @@ int main(int argc, char** argv)
 
 //	test_mm_backward();
 
-//	float data[9] = {-0.2160, -0.6887,  0.0000, -0.7114,  0.5965,  0.0000, -0.6687, -0.4121,  0.0000};
-//	cv::Mat M(3,3, CV_32F, data);
-//	std::cout << "M = " << std::endl << " " << M << std::endl << std::endl;
-//
-//	// OpenCV implementation
-//	cv::Mat u, w, vt;
-//	std::cout << "[start] OpenCV SVD decomposition" << std::endl;
-//	cv::SVD::compute(M, w, u, vt);
-//	std::cout << "[end] OpenCV SVD decomposition" << std::endl;
-//	std::cout << "u = " << std::endl << " " << u << std::endl << std::endl;
-//	std::cout << "w = " << std::endl << " " << w << std::endl << std::endl;
-//	std::cout << "vt = " << std::endl << " " << vt << std::endl << std::endl;
-
 	return 0;
 }
-
-
-
-//	std::cout << "test translation:" << std::endl << cv::repeat(cv::Mat(tf.getTranslation()).reshape(1, 1), 3, 1) << std::endl;
-//
-//	std::cout << "Rotation matrix = " << std::endl << " " << tf.getRotationMatrix() << std::endl;
-//	std::cout << "Translation = " << std::endl << " " << tf.getTranslation() << std::endl;
-//	std::cout << "Rotation vector = " << std::endl << " " << tf.getRotationVector() << std::endl;
-//	std::cout << "Rotation angles = " << std::endl << " " << tf.getRotationAngles() << std::endl;
-//	std::vector<cv::Point3f> scenePts = createScene(4);
-//
-//	std::cout << "Data = " << std::endl << " " << scenePts << std::endl;
-//
-//	std::vector<cv::Point3f> measurePts = createMeasurements(scenePts, tf);
-//
-//	std::cout << "Mesurements = " << std::endl << " " << measurePts << std::endl;
-//
-//	cv::Mat r_est, t_est, jacobian;
-//
-//	kabsch(measurePts, scenePts, r_est, t_est, jacobian, true);
-//
-//	std::cout << "Estimated rotation vector = " << std::endl << " " << r_est << std::endl;
-//	std::cout << "Estimated translation vector = " << std::endl << " " << t_est << std::endl;
-
-//	cv::Mat jacFd = kabsch_fd(measurePts, scenePts);
-
-//	std::cout << "Jacobian (finite difference): " << std::endl << " " << jacFd << std::endl;
-
-
-
-//		dRidX = cv::Mat::zeros(dRidXc.size(), dRidXc.type());
-//
-//		for (int m = 0; m < dRidXc.rows; ++m)
-//		{
-//			for (int n = 0; n < dRidXc.cols; ++n)
-//			{
-//				for (int l = 0; l < dRidXc.rows; ++l)
-//				{
-//
-//					if (l == m)
-//					{
-//						dRidX.at<float>(m,n) += dRidXc.at<float>(l,n) * (N-1) / N;
-//					}
-//					else
-//					{
-//						dRidX.at<float>(m,n) -= dRidXc.at<float>(l,n) / N;
-//					}
-//
-//				}
-//
-//			}
-//		}
-
