@@ -283,8 +283,22 @@ void writeToFile(std::string filename, std::ios_base::openmode mode, std::string
 		std::cout <<"Unable to open file " << filename << std::endl;
 }
 
-
-cv::Mat svd_backward(const std::vector<cv::Mat> &grads, const cv::Mat& self, bool some, const cv::Mat& raw_u, const cv::Mat& sigma, const cv::Mat& raw_v)
+/*
+ * @brief reimplementation of PyTorch svd_backward in C++
+ *
+ * ref: https://github.com/pytorch/pytorch/blob/1d427fd6f66b0822db62f30e7654cae95abfd207/tools/autograd/templates/Functions.cpp
+ * ref: https://j-towns.github.io/papers/svd-derivative.pdf
+ *
+ * This makes no assumption on the signs of sigma.
+ *
+ * @param grad: gradients w.r.t U, W, V
+ * @param self: matrix decomposed by SVD
+ * @param raw_u: U from SVD output
+ * @param sigma: W from SVD output
+ * @param raw_v: V from SVD output
+ *
+ */
+cv::Mat svd_backward(const std::vector<cv::Mat> &grads, const cv::Mat& self, const cv::Mat& raw_u, const cv::Mat& sigma, const cv::Mat& raw_v)
 {
 	auto m = self.rows;
 	auto n = self.cols;
@@ -295,24 +309,7 @@ cv::Mat svd_backward(const std::vector<cv::Mat> &grads, const cv::Mat& self, boo
 	auto v = raw_v;
 	auto gu = grads[0];
 	auto gv = grads[2];
-/*
-	if (!some)
-	{
-		// We ignore the free subspace here because possible base vectors cancel
-		// each other, e.g., both -v and +v are valid base for a dimension.
-		// Don't assume behavior of any particular implementation of svd.
-	    u = raw_u.narrow(1, 0, k);
-	    v = raw_v.narrow(1, 0, k);
-	    if (gu.defined())
-	    {
-	    	gu = gu.narrow(1, 0, k);
-	    }
-	    if (gv.defined())
-	    {
-	    	gv = gv.narrow(1, 0, k);
-	    }
-	}
-*/
+
 	auto vt = v.t();
 
 	cv::Mat sigma_term;
@@ -388,6 +385,16 @@ cv::Mat svd_backward(const std::vector<cv::Mat> &grads, const cv::Mat& self, boo
 	return u_term + sigma_term + v_term;
 }
 
+/*
+ * @brief Compute partial derivatives of the matrix product for each multiplied matrix.
+ * 			This wrapper function avoids unnecessary computation
+ *
+ * @param _Amat: First multiplied matrix.
+ * @param _Bmat: Second multiplied matrix.
+ * @param _dABdA Output parameter: First output derivative matrix. Pass cv::noArray() if not needed.
+ * @param _dABdB Output parameter: Second output derivative matrix. Pass cv::noArray() if not needed.
+ *
+ */
 void matMulDerivWrapper(cv::InputArray _Amat, cv::InputArray _Bmat, cv::OutputArray _dABdA, cv::OutputArray _dABdB)
 {
 	cv::Mat A = _Amat.getMat(), B = _Bmat.getMat();
@@ -410,55 +417,60 @@ void matMulDerivWrapper(cv::InputArray _Amat, cv::InputArray _Bmat, cv::OutputAr
 }
 
 /*
- * @brief
+ * @brief Computes extrinsic camera parameters using Kabsch algorithm.
+ * 			If jacobean matrix is passed as arugument, it further computes the analytical gradients.
  *
  * @param imgdPts: measurements
  * @param objPts: scene points
- * @param extCam Output parameter: extrinsic camera matrix (incl. rotation and translation)
- * @param jacobean Output parameter: 6x3N jacobean matrix of rotation and translation vector
- * 					w.r.t scene point coordinates
- * @param calc: flag to indicate calcuation of jacobean matrix
+ * @param extCam Output parameter: extrinsic camera matrix (i.e. rotation vector and translation vector)
+ * @param _jacobean Output parameter: 6x3N jacobean matrix of rotation and translation vector
+ * 					w.r.t scene point coordinates.
+ * 					If gradient computation is not successful, jacobean matrix is set empty.
  *
  */
-bool kabsch(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Point3f>& objPts, jp::cv_trans_t& extCam, cv::OutputArray _jacobean=cv::noArray())
+void kabsch(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Point3f>& objPts, jp::cv_trans_t& extCam, cv::OutputArray _jacobean=cv::noArray())
 {
 
-	cv::Mat P, X, A, U, W, Vt, D, R, V, invN, gRodr;
+	unsigned int N = objPts.size();  //number of scene points
+	bool calc = _jacobean.needed();  //check if computation of gradient is required
+	bool degenerate = false;  //indicate if SVD gives degenerate case, i.e. non-distinct or zero singular values
 
-	cv::Mat& r = extCam.first;
-	cv::Mat& t = extCam.second;
+	cv::Mat P, X, Pc, Xc;  //Nx3
+	cv::Mat A, U, W, Vt, V, D, R;  //3x3
+	cv::Mat cx, cp, r, t;  //1x3
+	cv::Mat invN;  //1xN
+	cv::Mat gRodr;  //9x3
 
-	unsigned int N = objPts.size();
-	bool calc = _jacobean.needed();
-	bool degenerate = false;
-
+	// construct the datasets P and X from input vectors, set false to avoid data copying
 	P = cv::Mat(imgdPts, false).reshape(1, N);
-
 	X = cv::Mat(objPts, false).reshape(1, N);
 
-	invN = cv::Mat(1, N, CV_32F, 1.f/N);
+	// compute centroid as average of each coordinate axis
+	invN = cv::Mat(1, N, CV_32F, 1.f/N);  //average filter
+	cx = invN * X;
+	cp = invN * P;
 
-	cv::Mat tx = invN * X;
-	cv::Mat tp = invN * P;
+	// move centroid of datasets to origin
+	Xc =  X - cv::repeat(cx, N, 1);
+	Pc =  P - cv::repeat(cp, N, 1);
 
-	cv::Mat Xc =  X - cv::repeat(tx, N, 1);
-	cv::Mat Pc =  P - cv::repeat(tp, N, 1);
-
+	// compute covariance matrix
 	A = Pc.t() * Xc;
 
+	// compute SVD of covariance matrix
 	cv::SVD::compute(A, W, U, Vt);
 
+	// degenerate if any singular value is zero
 	if ((unsigned int)cv::countNonZero(W) != (unsigned int)W.total())
 		degenerate = true;
 
+	// degenerate if singular values are not distinct
 	if (std::abs(W.at<float>(0,0)-W.at<float>(1,0)) < 1e-6
 			|| std::abs(W.at<float>(0,0)-W.at<float>(2,0)) < 1e-6
 			|| std::abs(W.at<float>(1,0)-W.at<float>(2,0)) < 1e-6)
 		degenerate = true;
 
-	if (calc && degenerate)
-		return false;
-
+	// for correcting rotation matrix to ensure a right-handed coordinate system
 	float d = cv::determinant(U * Vt);
 
 	D = (cv::Mat_<float>(3,3) <<
@@ -466,29 +478,48 @@ bool kabsch(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Point3f>& objPts,
 				0., 1., 0.,
 				0., 0., d );
 
+	// calculates rotation matrix R
 	R = U * (D * Vt);
 
+	// convert rotation matrix to rotation vector,
+	// if needed, also compute jacobean matrix of rotation matrix w.r.t rotation vector
 	calc ? cv::Rodrigues(R, r, gRodr) : cv::Rodrigues(R, r);
 
-	t = tp - tx * R.t(); //(R*tx.t()).t();
+	// calculates translation vector
+	t = cp - cx * R.t();  //equiv: cp - (R*cx.t()).t();
 
-	r = r.reshape(1, 3);
-	t = t.reshape(1, 3);
+	// store results
+	extCam.first = r.reshape(1, 3);
+	extCam.second = t.reshape(1, 3);
 
+	// end here no gradient is required
 	if (!calc)
-		return true;
+		return;
 
-	cv::Mat onehot, dRidU, dRidVt, dRidV, dRidA, dRidXc, dRidX;
-	cv::Mat dRdU, dRdVt, dAdXc, drdX, dtdR, dtdtx, dtdX, dRdX, dtxdX;
+	// if SVD is degenerate, return empty jacobean matrix
+	if (degenerate)
+	{
+		_jacobean.release();
+		return;
+	}
 
-	matMulDerivWrapper(U, Vt, dRdU, dRdVt);
-	matMulDerivWrapper(Pc.t(), Xc, cv::noArray(), dAdXc);
-	matMulDerivWrapper(R, tx.t(), dtdR, dtdtx);
-	matMulDerivWrapper(invN, X, cv::noArray(), dtxdX);
-
-	dRdX = cv::Mat_<float>::zeros(9, N * 3);
+	// allocate matrix data
 	_jacobean.create(6, N*3, CV_64F);
 	cv::Mat jacobean = _jacobean.getMat();
+
+//	cv::Mat dRidU, dRidVt, dRidV, dRidA, dRidXc, dRidX;
+	cv::Mat dRdU, dRdVt;  //9x9
+	cv::Mat dAdXc;  //9x3N
+	cv::Mat dtdR;  //3x9
+	cv::Mat dtdcx;  //3x3
+	cv::Mat dcxdX, drdX, dtdX;  //3x3N
+	cv::Mat dRdX = cv::Mat_<float>::zeros(9, N*3);  //9x3N
+
+	// jacobean matrices of each dot product operation in kabsch algorithm
+	matMulDerivWrapper(U, Vt, dRdU, dRdVt);
+	matMulDerivWrapper(Pc.t(), Xc, cv::noArray(), dAdXc);
+	matMulDerivWrapper(R, cx.t(), dtdR, dtdcx);
+	matMulDerivWrapper(invN, X, cv::noArray(), dcxdX);
 
 	V = Vt.t();
 	W = W.reshape(1, 1);
@@ -496,16 +527,18 @@ bool kabsch(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Point3f>& objPts,
 //	#pragma omp parallel for
 	for (int i = 0; i < 9; ++i)
 	{
-		//cv::Mat onehot, dRidU, dRidVt, dRidV, dRidA, dRidXc, dRidX;
+		cv::Mat dRidU, dRidVt, dRidV, dRidA;  //3x3
+		cv::Mat dRidXc, dRidX;  //Nx3
 
 		dRidU = dRdU.row(i).reshape(1, 3);
 		dRidVt = dRdVt.row(i).reshape(1, 3);
 
 		dRidV = dRidVt.t();
 
+		//W is not used in computation of R, no gradient of W is needed
 		std::vector<cv::Mat> grads{dRidU, cv::Mat(), dRidV};
 
-		dRidA = svd_backward(grads, A, true, U, W, V);
+		dRidA = svd_backward(grads, A, U, W, V);
 
 		dRidA = dRidA.reshape(1, 1);
 
@@ -520,19 +553,20 @@ bool kabsch(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Point3f>& objPts,
 //		#pragma omp parallel for
 		for (int j = 0; j < 3; ++j)
 		{
-			float* dcdx = (float*)dRidX.data + j;
-			const float* dxcdx = (const float*)dRidXc.data + j;
+			// compute dRidXj = dRidXcj * dXcjdXj
+			float* pdRidXj = (float*)dRidX.data + j;
+			const float* pdRidXcj = (const float*)dRidXc.data + j;
 
 			float tmp = 0.f;
 			for (unsigned int k = 0; k < N; ++k)
 			{
-				tmp += dxcdx[k*bstep];
+				tmp += pdRidXcj[k*bstep];
 			}
 			tmp /= N;
 
 			for (unsigned int k = 0; k < N; ++k)
 			{
-				dcdx[k*bstep] = dxcdx[k*bstep] - tmp;
+				pdRidXj[k*bstep] = pdRidXcj[k*bstep] - tmp;
 			}
 		}
 
@@ -545,32 +579,26 @@ bool kabsch(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Point3f>& objPts,
 
 	drdX.copyTo(jacobean.rowRange(0, 3));
 
-	dtdX = - (dtdR * dRdX + dtdtx * dtxdX);
+	dtdX = - (dtdR * dRdX + dtdcx * dcxdX);
 
 	dtdX.copyTo(jacobean.rowRange(3, 6));
-
-	return true;
 
 }
 
 /*
- * @brief Performs Kabsch algorithm and differentiation
- * 			using central finite differences
+ * @brief Computes gradient of Kabsch algorithm using central finite differences
  *
  * @param imgdPts: measurement points
  * @param objPts: scene points
- * @param extCam Output parameter: extrinsic camera matrix (incl. rotation and translation)
+ * @param jacobean Output parameter: 6x3N jacobean matrix of rotation and translation vector
+ * 										w.r.t scene point coordinates
  * @param eps: step size in finite difference approximation
  *
- * @return 6xN jacobean matrix w.r.t scene point coordinates
- *
  */
-cv::Mat_<double> kabsch_fd(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Point3f> objPts, jp::cv_trans_t& extCam, float eps = 0.001f)
+void dKabschFD(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Point3f> objPts, cv::OutputArray _jacobean, float eps = 0.001f)
 {
-	cv::Mat_<double> jacobean = cv::Mat_<double>::zeros(6, objPts.size()*3);
-	bool success;
-
-	kabsch(imgdPts, objPts, extCam);
+	_jacobean.create(6, objPts.size()*3, CV_64F);
+	cv::Mat jacobean = _jacobean.getMat();
 
 	for (unsigned int i = 0; i < objPts.size(); ++i)
 	{
@@ -584,10 +612,7 @@ cv::Mat_<double> kabsch_fd(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Po
 			// forward step
 
 			jp::cv_trans_t fStep;
-			success = kabsch(imgdPts, objPts, fStep); //return success flag?
-
-			if(!success)
-				return cv::Mat_<double>::zeros(6, objPts.size() * 3);
+			kabsch(imgdPts, objPts, fStep);
 
 			if(j == 0) objPts[i].x -= 2 * eps;
 			else if(j == 1) objPts[i].y -= 2 * eps;
@@ -595,10 +620,7 @@ cv::Mat_<double> kabsch_fd(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Po
 
 			// backward step
 			jp::cv_trans_t bStep;
-			success = kabsch(imgdPts, objPts, bStep); //return success flag?
-
-			if(!success)
-				return cv::Mat_<double>::zeros(6, objPts.size() * 3);
+			kabsch(imgdPts, objPts, bStep);
 
 			if(j == 0) objPts[i].x += eps;
 			else if(j == 1) objPts[i].y += eps;
@@ -612,12 +634,10 @@ cv::Mat_<double> kabsch_fd(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Po
 			fStep.second.copyTo(jacobean.col(i * 3 + j).rowRange(3, 6));
 
 			if(containsNaNs(jacobean.col(i * 3 + j)))
-				return cv::Mat_<double>::zeros(6, objPts.size() * 3);
+				jacobean.setTo(0);
 
 		}
 	}
-
-	return jacobean;
 
 }
 
@@ -650,7 +670,7 @@ void test_runtime()
 
 	std::vector<cv::Point3f> scenePts, measurePts;
 	jp::cv_trans_t extCamAg, extCamFd;
-	cv::Mat jacAg;
+	cv::Mat jacAg, jacFd;
 
 	for (unsigned int i = 0; i < powers.size(); ++i)
 	{
@@ -676,7 +696,7 @@ void test_runtime()
 			sumAgTime += secAg.count();
 
 			auto beginFd = std::chrono::high_resolution_clock::now();
-			kabsch_fd(measurePts, scenePts, extCamFd);
+			dKabschFD(measurePts, scenePts, jacFd);
 			auto endFd = std::chrono::high_resolution_clock::now();
 			std::chrono::duration<double> secFd = endFd-beginFd;
 			sumFdTime += secFd.count();
@@ -711,9 +731,9 @@ void test_accuracy()
 	float delta = 0.001f; //step size used in finite difference calculation
 
 	// number of cases in all trials per dataset size
-	unsigned int cntErrJac = 0, cntErrRot = 0, cntErrTrans = 0, cntErrRotFD = 0, cntDegen = 0;
+	unsigned int cntErrJac = 0, cntErrRot = 0, cntErrTrans = 0, cntDegen = 0;
 	// sum of errors in all trials per dataset size
-	unsigned int sumErrJac = 0, sumErrRot = 0, sumErrTrans = 0, sumErrRotFD = 0;
+	unsigned int sumErrJac = 0, sumErrRot = 0, sumErrTrans = 0;
 
 	// create a known rotation and translation
 	cv::Mat angles = (cv::Mat_<float>(1,3) << 0., M_PI/2., 0.);//(cv::Mat_<float>(1,3) << 0., M_PI/2., M_PI/3.);
@@ -723,7 +743,7 @@ void test_accuracy()
 	std::vector<cv::Point3f> scenePts, measurePts;
 
 
-	cv::Mat jacAg, jacFd;
+	cv::Mat jacAg = cv::Mat::zeros(6, 10, CV_32F), jacFd;
 
 	writeToFile(FNAME_ACCURACY, std::ofstream::out, "header",
 	    		{{"#Points", 0}, {"#Trials", 0}, {"#Degeneracy", 0},
@@ -758,15 +778,15 @@ void test_accuracy()
 //			std::cout << "Rotation angles = " << std::endl << " " << tf.getRotationAngles() << std::endl;
 
 			// run Kabsch with analytical gradients
-			bool success = kabsch(measurePts, scenePts, extCamAg, jacAg);
+			kabsch(measurePts, scenePts, extCamAg, jacAg);
 
-			if (!success)
+			if (jacAg.empty())
 			{
 				cntDegen += 1;
-				jacAg = kabsch_fd(measurePts, scenePts, extCamAg, delta);
+				dKabschFD(measurePts, scenePts, jacAg, delta);
 			}
 
-			jacFd = kabsch_fd(measurePts, scenePts, extCamFd, delta);
+			dKabschFD(measurePts, scenePts, jacFd, delta);
 
 //			std::cout << "Estimated rotation vector = " << std::endl << " " << extCamAg.first << std::endl;
 //			std::cout << "Estimated translation vector = " << std::endl << " " << extCamAg.second << std::endl;
@@ -774,8 +794,9 @@ void test_accuracy()
 			double errJac = compareMatrix(jacAg, jacFd);
 			double errRot = compareMatrix(tf.getRotationVector(), extCamAg.first);
 			double errTrans = compareMatrix(tf.getTranslation(), extCamAg.second.t());
-			double errRotFD = compareMatrix(tf.getRotationVector(), extCamFd.first);
 
+//			print("Jacobean AG", jacAg);
+//			print("Jacobean FD", jacFd);
 
 			if (errJac > etol)
 				cntErrJac += 1;
@@ -786,13 +807,9 @@ void test_accuracy()
 			if (errTrans > etol)
 				cntErrTrans += 1;
 
-			if (errRotFD > etol)
-				cntErrRotFD += 1;
-
 			sumErrJac += errJac;
 			sumErrRot += errRot;
 			sumErrTrans += errTrans;
-			sumErrRotFD += errRotFD;
 
 		}
 
@@ -803,20 +820,17 @@ void test_accuracy()
         writeToFile(FNAME_ACCURACY, std::ofstream::app, "table",
         		{{"#Points", N[i]}, {"#Trials", trials}, {"#Degeneracy", cntDegen},
         		{"#Jacobian errors", cntErrJac}, {"#Tranlation errors", cntErrTrans},
-        		{"#Rotation errors", cntErrRot}, {"#Rotation errors (Finite Difference)", cntErrRotFD},
-        		{"Jacobian error", sumErrJac}, {"Translation error", sumErrTrans},
-        		{"Rotation erorr", sumErrRot}});
+        		{"#Rotation errors", cntErrRot}, {"Jacobian error", sumErrJac},
+				{"Translation error", sumErrTrans}, {"Rotation erorr", sumErrRot}});
 
         sumErrJac = 0;
         sumErrRot = 0;
         sumErrTrans = 0;
-        sumErrRotFD = 0;
 
         cntDegen = 0;
         cntErrJac = 0;
         cntErrRot = 0;
         cntErrTrans = 0;
-        cntErrRotFD = 0;
 
 	}
 
