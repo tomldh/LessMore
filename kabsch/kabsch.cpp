@@ -23,7 +23,7 @@ inline bool containsNaNs(const cv::Mat& m)
 	return cv::sum(cv::Mat(m != m))[0] > 0;
 }
 
-void print(std::string name, cv::Mat& mat)
+void print(std::string name, const cv::Mat& mat)
 {
 	std::cout << "matrix: " << name << std::endl;
 	std::cout << "rows: " << mat.rows << std::endl;
@@ -224,6 +224,36 @@ std::vector<cv::Point3f> createMeasurements(std::vector<cv::Point3f>& data, Tran
 	}
 
 	return measurements;
+}
+
+void postKabsch(std::vector<cv::Point3f>& imgdPts, std::vector<cv::Point3f>& objPts, jp::cv_trans_t& transform)
+{
+	unsigned int N = objPts.size();
+	std::vector<cv::Point3f> transformedPts;
+
+	cv::Mat rot;
+	cv::Rodrigues(transform.first, rot);
+std::cout << "finished rodirgues" << std::endl;
+
+cv::Mat_<double> trans = transform.second;
+	// P = RX + T
+	for (unsigned int i = 0; i < objPts.size(); ++i)
+	{
+		cv::Mat_<double> res= rot * cv::Mat(objPts[i], false);
+
+		print("res", res);
+		std::cout << "finished matmul\n";
+		print("trans", trans.t());
+		cv::add(res, trans, res);
+		std::cout << "finished addition\n";
+		transformedPts.push_back(cv::Point3f(res.at<double>(0,0), res.at<double>(1,0), res.at<double>(2,0)));
+	}
+
+	cv::Mat P = cv::Mat(imgdPts, false).reshape(1, N);
+	cv::Mat X = cv::Mat(transformedPts, false).reshape(1, N);
+
+	print("P", P);
+	print("tP", X);
 }
 
 /*
@@ -655,7 +685,7 @@ void test_runtime()
 	    		{{"#Points", 0}, {"#Trials", 0}, {"FiniteDifference(sec)", 0},
 	    		{"AnalyticalGradient(sec)", 0}});
 
-	std::vector<unsigned int> powers {2, 4, 6, 8, 10};
+	std::vector<unsigned int> powers {2, 4, 6, 8, 10, 12, 13};
 	std::vector<unsigned int> N; //number of points by 2^power
 	unsigned int trials = 100; //number of repetitions per dataset size
 
@@ -724,7 +754,7 @@ void test_accuracy()
 {
 	std::cout << "Accuracy test." << std::endl;
 
-	std::vector<unsigned int> powers {2, 4, 6, 8, 10};
+	std::vector<unsigned int> powers {2, 4, 6, 8, 10, 12, 13};
 	std::vector<unsigned int> N; //number of points by 2^power
 	unsigned int trials = 100; //trials per dataset size
 	float etol = 1e-3; //error tolerance of results
