@@ -48,7 +48,7 @@ namespace jp
     {
         cv::Mat_<double> eye = cv::Mat_<double>::zeros(3, 1);
 
-        if(depth == 0)
+        if(depth == 0 || depth > 6000)
             return eye;
 
         GlobalProperties* gp = GlobalProperties::getInstance();
@@ -58,6 +58,11 @@ namespace jp
         eye(2, 0) = (jp::coord1_t) depth;
 
         return eye;
+    }
+
+    inline bool onObj(const jp::coord3_t& pt)
+    {
+        return ((pt(0) != 0) || (pt(1) != 0) || (pt(2) != 0));
     }
 
     /**
@@ -226,7 +231,7 @@ namespace jp
             for(unsigned x = 0; x < img.cols; x++)
             for(unsigned y = 0; y < img.rows; y++)
             {
-                if(depthData(y, x) == 0)
+                if(depthData(y, x) == 0 || depthData(y, x) > 6000)
                 {
                     img(y, x) = jp::coord3_t(0, 0, 0);
                     continue;
@@ -238,6 +243,30 @@ namespace jp
                 // transform camera coordinte to object coordinate
                 eye = eye - poseData.second;
                 eye = rot.t() * eye;
+
+                img(y, x) = jp::coord3_t(eye(0, 0), eye(1, 0), eye(2, 0));
+            }
+	}
+
+	void getCamPts(size_t i, jp::img_coord_t& img) const
+	{
+            jp::img_depth_t depthData;
+            getDepth(i, depthData);
+
+            img = jp::img_coord_t(depthData.rows, depthData.cols);
+
+            #pragma omp parallel for
+            for(unsigned x = 0; x < img.cols; x++)
+            for(unsigned y = 0; y < img.rows; y++)
+            {
+                if(depthData(y, x) == 0 || depthData(y, x) > 6000)
+                {
+                    img(y, x) = jp::coord3_t(0, 0, 0);
+                    continue;
+                }
+
+                // transform depth to camera coordinate
+                cv::Mat_<double> eye = pxToEye(x, y, depthData(y, x) / 1000.0);
 
                 img(y, x) = jp::coord3_t(eye(0, 0), eye(1, 0), eye(2, 0));
             }

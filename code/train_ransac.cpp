@@ -99,6 +99,12 @@ int main(int argc, const char* argv[])
         std::vector<cv::Mat_<cv::Vec3f>> imgMaps;
         jp::img_coord_t estObj = getCoordImg(imgBGR, sampling, imgMaps, true, stateRGB);
 
+        jp::img_coord_t camPts;
+        jp::img_coord_t camPtsMap;
+
+        trainingDataset.getCamPts(imgID, camPts);
+        camPtsMap = getCamPtsMap(camPts, sampling);
+
         cv::Mat_<double> dLoss_dObj = cv::Mat_<double>::zeros(sampling.rows * sampling.cols, 3); // acumulate hypotheses gradients for patches
 
         StopWatch stopW;
@@ -130,6 +136,7 @@ int main(int argc, const char* argv[])
             refHyps,
             sfScores,
             estObj,
+			camPtsMap,
             sampling,
             sampledPoints,
             losses,
@@ -240,7 +247,7 @@ int main(int argc, const char* argv[])
         // --- path II, score path --------------------------------------------------------------------
         std::cout << BLUETEXT("Calculating gradients wrt scores.") << std::endl;
 
-        std::vector<cv::Mat_<double>> dLoss_dScore_dObjs = dSMScore(estObj, sampling, sampledPoints, losses, sfScores, stateObj);
+        std::vector<cv::Mat_<double>> dLoss_dScore_dObjs = dSMScore(estObj, camPtsMap, sampling, sampledPoints, losses, sfScores, stateObj);
 
         // accumulate score gradients
         cv::Mat_<double> dLoss_dScore_dObj = cv::Mat_<double>::zeros(sampling.rows * sampling.cols, 3);

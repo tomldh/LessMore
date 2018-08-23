@@ -106,6 +106,12 @@ int main(int argc, const char* argv[])
         std::vector<cv::Mat_<cv::Vec3f>> imgMaps;
         jp::img_coord_t estObj = getCoordImg(testRGB, sampling, imgMaps, false, stateRGB);
 
+        jp::img_coord_t camPts;
+        jp::img_coord_t camPtsMap;
+
+        testDataset.getCamPts(i, camPts);
+        camPtsMap = getCamPtsMap(camPts, sampling);
+
         // process frame (same function used in training, hence most of the variables below are not used here), see method documentation for parameter explanation
         std::vector<jp::cv_trans_t> refHyps;
         std::vector<double> sfScores;
@@ -133,6 +139,7 @@ int main(int argc, const char* argv[])
             refHyps,
             sfScores,
             estObj,
+			camPtsMap,
             sampling,
             sampledPoints,
             losses,
