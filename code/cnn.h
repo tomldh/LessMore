@@ -760,6 +760,25 @@ jp::img_coord_t getCamPtsMap(const jp::img_coord_t& camPts, const cv::Mat_<cv::P
     return camPtsMap;
 }
 
+void transform(const std::vector<cv::Point3f>& objPts, const jp::cv_trans_t& transform, std::vector<cv::Point3f>& transformedPts)
+{
+	cv::Mat rot;
+	cv::Rodrigues(transform.first, rot);
+
+	cv::Mat_<double> trans = transform.second;
+
+	// P = RX + T
+	for (unsigned int i = 0; i < objPts.size(); ++i)
+	{
+		cv::Mat_<double> res= rot * cv::Mat_<double>(objPts[i], false);
+
+		cv::add(res, trans, res);
+
+		transformedPts.push_back(cv::Point3f(res.at<double>(0,0), res.at<double>(1,0), res.at<double>(2,0)));
+	}
+
+}
+
 /**
  * @brief Calculate an image of reprojection errors for the given object coordinate prediction and the given pose.
  * @param hyp Pose estimate.
@@ -812,6 +831,70 @@ cv::Mat_<float> getDiffMap(
 
     return diffMap;    
 }
+
+/**
+ * @brief Calculate an image of reprojection errors for the given object coordinate prediction and the given pose.
+ * @param hyp Pose estimate.
+ * @param objectCoordinates Object coordinate estimate.
+ * @param sampling Subsampling of the input image.
+ * @param camMat Calibration matrix of the camera.
+ * @return Image of reprojectiob errors.
+ */
+cv::Mat_<float> getDiffMap(
+  const jp::cv_trans_t& hyp,
+  const jp::img_coord_t& objectCoordinates,
+  const jp::img_coord_t& cameraCoordinates,
+  const cv::Mat_<cv::Point2i>& sampling,
+  const cv::Mat& camMat)
+{
+    cv::Mat_<float> diffMap(sampling.size());
+
+    std::vector<cv::Point3f> points3D;
+    std::vector<cv::Point3f> transformed3D;
+    std::vector<cv::Point3f> pointsCam3D;
+    std::vector<cv::Point2f> sources2D;
+
+    // collect 2D-3D correspondences
+    for(unsigned x = 0; x < sampling.cols; x++)
+    for(unsigned y = 0; y < sampling.rows; y++)
+    {
+        // get 2D location of the original RGB frame
+	cv::Point3f pt3D(cameraCoordinates(y, x)(0),
+		    cameraCoordinates(y, x)(1),
+		    cameraCoordinates(y, x)(2));
+
+        // get associated 3D object coordinate prediction
+	points3D.push_back(cv::Point3f(
+	    objectCoordinates(y, x)(0),
+	    objectCoordinates(y, x)(1),
+	    objectCoordinates(y, x)(2)));
+	pointsCam3D.push_back(pt3D);
+	sources2D.push_back(cv::Point2f(x, y));
+    }
+
+    if(points3D.empty()) return diffMap;
+
+    // project object coordinate into the image using the given pose
+    //cv::projectPoints(points3D, hyp.first, hyp.second, camMat, cv::Mat(), projections);
+    transform(points3D, hyp, transformed3D);
+
+    // measure reprojection errors
+    for(unsigned p = 0; p < transformed3D.size(); p++)
+    {
+    	if (!jp::onObj(cameraCoordinates(sources2D[p].y, sources2D[p].x)))
+    	{
+    		diffMap(sources2D[p].y, sources2D[p].x) = 0;
+    		continue;
+    	}
+	cv::Point3f curPt = pointsCam3D[p] - transformed3D[p];
+	float l = std::min(cv::norm(curPt), CNN_OBJ_MAXINPUT);
+	diffMap(sources2D[p].y, sources2D[p].x) = l;
+    }
+
+    return diffMap;
+}
+
+
 
 /**
  * @brief Project a 3D point into the image an measures the reprojection error.
@@ -1228,7 +1311,7 @@ void processImage(
     for(unsigned h = 0; h < refHyps.size(); h++)
     while(true)
     {
-	std::vector<cv::Point2f> projections;
+	std::vector<cv::Point3f> projections3D;
 	cv::Mat_<uchar> alreadyChosen = cv::Mat_<uchar>::zeros(estObj.size());
 	imgdPts[h].clear();
         objPts[h].clear();
@@ -1263,13 +1346,13 @@ void processImage(
 
         kabsch(imgdPts[h], objPts[h], refHyps[h]);
 
-        cv::projectPoints(objPts[h], refHyps[h].first, refHyps[h].second, camMat, cv::Mat(), projections);
+        transform(objPts[h], refHyps[h], projections3D);
 
         // check reconstruction, 4 sampled points should be reconstructed perfectly
         bool foundOutlier = false;
-        for(unsigned j = 0; j < localImgPts[h].size(); j++)
+        for(unsigned j = 0; j < imgdPts[h].size(); j++)
         {
-            if(cv::norm(localImgPts[h][j] - projections[j]) < inlierThreshold2D)
+            if(cv::norm(imgdPts[h][j] - projections3D[j]) < inlierThreshold2D)
                 continue;
             foundOutlier = true;
             break;
@@ -1287,7 +1370,7 @@ void processImage(
     std::vector<cv::Mat_<float>> diffMaps(objHyps);
     #pragma omp parallel for 
     for(unsigned h = 0; h < refHyps.size(); h++)
-        diffMaps[h] = getDiffMap(refHyps[h], estObj, sampling, camMat);
+        diffMaps[h] = getDiffMap(refHyps[h], estObj, camPtsMap, sampling, camMat);
 
     // execute score script to get hypothesis scores
     std::vector<double> scores = forward(diffMaps, stateObj);
@@ -1353,7 +1436,7 @@ void processImage(
             inlierMaps[h] = localInlierMap;
 
 	    // recalculate pose errors
-	    localDiffMap = getDiffMap(refHyps[h], estObj, sampling, camMat);
+	    localDiffMap = getDiffMap(refHyps[h], estObj, camPtsMap, sampling, camMat);
 	}
     }
 
