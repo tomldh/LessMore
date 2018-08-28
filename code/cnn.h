@@ -1352,7 +1352,8 @@ void processImage(
         bool foundOutlier = false;
         for(unsigned j = 0; j < imgdPts[h].size(); j++)
         {
-            if(cv::norm(imgdPts[h][j] - projections3D[j]) < inlierThreshold2D)
+        	double inlierThreshold3D = inlierThreshold2D / 100.0; // in meter
+            if(cv::norm(imgdPts[h][j] - projections3D[j]) < inlierThreshold3D)
                 continue;
             foundOutlier = true;
             break;
@@ -1410,7 +1411,8 @@ void processImage(
             for(unsigned x = 0; x < localDiffMap.cols; x++)
             for(unsigned y = 0; y < localDiffMap.rows; y++)
 	    {
-    		if(localDiffMap(y, x) < inlierThreshold2D)
+            	double inlierThreshold3D = inlierThreshold2D / 100.0; // in meter
+    		if(localDiffMap(y, x) < inlierThreshold3D)
 		{
     			if (!jp::onObj(camPtsMap(y, x))) continue;
 		    localImgdPts.push_back(cv::Point3f(camPtsMap(y, x)));
