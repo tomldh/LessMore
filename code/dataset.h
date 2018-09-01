@@ -48,7 +48,7 @@ namespace jp
     {
         cv::Mat_<double> eye = cv::Mat_<double>::zeros(3, 1);
 
-        if(depth == 0 || depth > 6000)
+        if(depth == 0)
             return eye;
 
         GlobalProperties* gp = GlobalProperties::getInstance();
@@ -231,7 +231,7 @@ namespace jp
             for(unsigned x = 0; x < img.cols; x++)
             for(unsigned y = 0; y < img.rows; y++)
             {
-                if(depthData(y, x) == 0 || depthData(y, x) > 6000)
+                if(depthData(y, x) == 0)
                 {
                     img(y, x) = jp::coord3_t(0, 0, 0);
                     continue;
@@ -259,7 +259,7 @@ namespace jp
             for(unsigned x = 0; x < img.cols; x++)
             for(unsigned y = 0; y < img.rows; y++)
             {
-                if(depthData(y, x) == 0 || depthData(y, x) > 6000)
+                if(depthData(y, x) == 0)
                 {
                     img(y, x) = jp::coord3_t(0, 0, 0);
                     continue;
