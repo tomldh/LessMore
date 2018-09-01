@@ -64,7 +64,7 @@ int main(int argc, const char* argv[])
     lua_State* stateObj = luaL_newstate();
     luaL_openlibs(stateObj);
     execute(baseScriptObj.c_str(), stateObj);
-    loadScore(inlierThreshold2D, gp->getCNNOutputDimX(), gp->getCNNOutputDimY(), stateObj);
+    loadScore(inlierThreshold2D/100.0, gp->getCNNOutputDimX(), gp->getCNNOutputDimY(), stateObj);
     setTraining(stateObj);
     
     std::cout << "Loading script: " << baseScriptRGB << std::endl;    

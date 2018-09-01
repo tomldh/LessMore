@@ -228,7 +228,7 @@ void loadModel(std::string modelFile, int inW, int inH, int outW, int outH, lua_
  * @param outH Height of CNN output.
  * @param state Lua state.
  */
-void loadScore(int threshold, int outW, int outH, lua_State* state)
+void loadScore(double threshold, int outW, int outH, lua_State* state)
 {
     lua_getglobal(state, "loadModel");
     lua_pushnumber(state, threshold);
