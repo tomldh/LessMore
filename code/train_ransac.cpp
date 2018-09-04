@@ -162,7 +162,7 @@ int main(int argc, const char* argv[])
             if(sfScores[h] < EPS) continue; // skip hypothesis with no impact on expectation
 
             // collect inlier correspondences of last refinemen iteration
-            std::vector<cv::Point2f> imgPts;
+            std::vector<cv::Point3f> imgdPts;
             std::vector<cv::Point2i> srcPts;
             std::vector<cv::Point3f> objPts;
 
@@ -171,21 +171,14 @@ int main(int argc, const char* argv[])
             {
                 if(inlierMaps[h](y, x))
                 {
-                    imgPts.push_back(sampling(y, x));
+                    imgdPts.push_back(cv::Point3f(camPtsMap(y, x)));
                     srcPts.push_back(cv::Point2i(x, y));
                     objPts.push_back(cv::Point3f(estObj(y, x)));
                 }
             }
 
-            if(imgPts.empty())
+            if(imgdPts.empty())
                 continue;
-
-            // calculate reprojection errors
-            std::vector<cv::Point2f> projections;
-            cv::Mat_<double> projectionsJ;
-            cv::projectPoints(objPts, refHyps[h].first, refHyps[h].second, camMat, cv::Mat(), projections, projectionsJ);
-
-            projectionsJ = projectionsJ.colRange(0, 6);
 
             //assemble the jacobean of the refinement residuals
             cv::Mat_<double> jacobeanR = cv::Mat_<double> ::zeros(objPts.size(), 6);
@@ -194,15 +187,7 @@ int main(int argc, const char* argv[])
 
             for(int ptIdx = 0; ptIdx < objPts.size(); ptIdx++)
             {
-                double err = std::max(cv::norm(projections[ptIdx] - imgPts[ptIdx]), EPS);
-                if(err > CNN_OBJ_MAXINPUT)
-                    continue;
-
-                // derivative of norm
-                dNdP(0, 0) = 1 / err * (projections[ptIdx].x - imgPts[ptIdx].x);
-                dNdP(0, 1) = 1 / err * (projections[ptIdx].y - imgPts[ptIdx].y);
-
-                dNdH = dNdP * projectionsJ.rowRange(2 * ptIdx, 2 * ptIdx + 2);
+                dNdH = dTransformdHyp(imgdPts[ptIdx], objPts[ptIdx], refHyps[h]);
                 dNdH.copyTo(jacobeanR.row(ptIdx));
             }
 
@@ -211,7 +196,7 @@ int main(int argc, const char* argv[])
 
             for(int ptIdx = 0; ptIdx < objPts.size(); ptIdx++)
             {
-                cv::Mat_<double> dNdO = dProjectdObj(imgPts[ptIdx], objPts[ptIdx], refHyps[h], camMat);
+                cv::Mat_<double> dNdO = dTransformdObj(imgdPts[ptIdx], objPts[ptIdx], refHyps[h]);
                 dNdO = jacobeanR.col(ptIdx) * dNdO;
 
                 int dIdx = srcPts[ptIdx].y * sampling.cols * 3 + srcPts[ptIdx].x * 3;

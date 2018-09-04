@@ -844,8 +844,7 @@ cv::Mat_<float> getDiffMap(
   const jp::cv_trans_t& hyp,
   const jp::img_coord_t& objectCoordinates,
   const jp::img_coord_t& cameraCoordinates,
-  const cv::Mat_<cv::Point2i>& sampling,
-  const cv::Mat& camMat)
+  const cv::Mat_<cv::Point2i>& sampling)
 {
     cv::Mat_<float> diffMap(sampling.size());
 
@@ -1135,6 +1134,63 @@ cv::Mat_<double> dProjectdHyp(const cv::Point2f& pt, const cv::Point3f& obj, con
 }
 
 /**
+ * @brief Calculates the Jacobean of the transform function w.r.t the given 6D pose, ie. the function has the form 6 -> 1
+ * @param pt Ground truth 3D location in camera coordinate.
+ * @param obj 3D point.
+ * @param hyp Pose estimate.
+ * @return 1x6 Jacobean matrix of partial derivatives.
+ */
+cv::Mat_<double> dTransformdHyp(const cv::Point3f& pt, const cv::Point3f& obj, const jp::cv_trans_t hyp)
+{
+    //transform point
+    cv::Mat objMat = cv::Mat(obj);
+    objMat.convertTo(objMat, CV_64F);
+
+    cv::Mat rot, dRdH;
+    cv::Rodrigues(hyp.first, rot, dRdH);
+    dRdH = dRdH.t();
+
+    cv::Mat eyeMat = rot * objMat + hyp.second;
+
+    cv::Point3d eyePt(eyeMat.at<double>(0, 0), eyeMat.at<double>(1, 0), eyeMat.at<double>(2, 0));
+
+	// calculate error
+	double err = std::sqrt((pt.x - eyePt.x) * (pt.x - eyePt.x) + (pt.y - eyePt.y) * (pt.y - eyePt.y) + (pt.z - eyePt.z) * (pt.z - eyePt.z));
+
+    // early out if projection error is above threshold
+    if(err > CNN_OBJ_MAXINPUT)
+    	return cv::Mat_<double>::zeros(1, 6);
+
+    err += EPS; // avoid dividing by zero
+
+    // derivative of the error wrt to transformation
+    cv::Mat_<double> dNdTf = cv::Mat_<double>::zeros(1, 3);
+    dNdTf(0, 0) = -1 / err * (pt.x - eyePt.x);
+    dNdTf(0, 1) = -1 / err * (pt.y - eyePt.y);
+    dNdTf(0, 2) = -1 / err * (pt.z - eyePt.z);
+
+    // derivative of transformation function wrt rotation matrix
+    cv::Mat_<double> dTfdR = cv::Mat_<double>::zeros(3, 9);
+    dTfdR.row(0).colRange(0, 3) = objMat.t();
+    dTfdR.row(1).colRange(3, 6) = objMat.t();
+    dTfdR.row(2).colRange(6, 9) = objMat.t();
+
+    // combined derivative of the error wrt the rodriguez vector
+    cv::Mat_<double> dNdH = dNdTf * dTfdR * dRdH;
+
+    // derivative of transformation wrt the translation vector
+    cv::Mat_<double> dTfdT = cv::Mat_<double>::eye(3, 3);
+
+    // combined derivative of error wrt the translation vector
+    cv::Mat_<double> dNdT = dNdTf * dTfdT;
+
+    cv::Mat_<double> jacobean(1, 6);
+    dNdH.copyTo(jacobean.colRange(0, 3));
+    dNdT.copyTo(jacobean.colRange(3, 6));
+    return jacobean;
+}
+
+/**
  * @brief Applies soft max to the given list of scores.
  * @param scores List of scores.
  * @return Soft max distribution (sums to 1)
@@ -1197,6 +1253,9 @@ void dScore(
         {
             int x = points[h][i].x;
             int y = points[h][i].y;
+
+            if (!jp::onObj(camPtsMap(y, x)))
+            	continue;
 	  
             imgdPts[h].push_back(cv::Point3f(camPtsMap(y, x)));
             objPts[h].push_back(cv::Point3f(estObj(y, x)));
@@ -1208,7 +1267,7 @@ void dScore(
         hyps[h] = cvHyp;
 	    
         // calculate projection errors
-        diffMaps[h] = getDiffMap(cvHyp, estObj, sampling, camMat);
+        diffMaps[h] = getDiffMap(cvHyp, estObj, camPtsMap, sampling);
     }
     
     std::vector<cv::Mat_<double>> dDiffMaps;
@@ -1237,16 +1296,20 @@ void dScore(
         for(unsigned x = 0; x < dDiffMaps[h].cols; x++)
         for(unsigned y = 0; y < dDiffMaps[h].rows; y++)
         {
-            cv::Point2f pt(sampling(y, x).x, sampling(y, x).y);
+
+        	if (!jp::onObj(camPtsMap(y, x)))
+        		continue;
+
+            cv::Point3f ptCam(camPtsMap(y, x));
             cv::Point3f obj(estObj(y, x));
 	  
             // account for the direct influence of all object coordinates in the score
-            cv::Mat_<double> dPdO = dProjectdObj(pt, obj, hyps[h], camMat);
+            cv::Mat_<double> dPdO = dTransformdObj(ptCam, obj, hyps[h]);
             dPdO *= dDiffMaps[h](y, x);
             dPdO.copyTo(jacobean.colRange(x * dDiffMaps[h].rows * 3 + y * 3, x * dDiffMaps[h].rows * 3 + y * 3 + 3));
 	    
             // account for the indirect influence of the object coorindates that are used to calculate the pose
-            cv::Mat_<double> dPdH = dProjectdHyp(sampling(y, x), cv::Point3f(estObj(y, x)), hyps[h], camMat);
+            cv::Mat_<double> dPdH = dTransformdHyp(cv::Point3f(camPtsMap(y, x)), cv::Point3f(estObj(y, x)), hyps[h]);
             supportPointGradients += dDiffMaps[h](y, x) * dPdH * dHdO;
         }
 
@@ -1443,7 +1506,7 @@ void processImage(
     std::vector<cv::Mat_<float>> diffMaps(objHyps);
     #pragma omp parallel for 
     for(unsigned h = 0; h < refHyps.size(); h++)
-        diffMaps[h] = getDiffMap(refHyps[h], estObj, camPtsMap, sampling, camMat);
+        diffMaps[h] = getDiffMap(refHyps[h], estObj, camPtsMap, sampling);
 
     // execute score script to get hypothesis scores
     std::vector<double> scores = forward(diffMaps, stateObj);
@@ -1510,7 +1573,7 @@ void processImage(
             inlierMaps[h] = localInlierMap;
 
 	    // recalculate pose errors
-	    localDiffMap = getDiffMap(refHyps[h], estObj, camPtsMap, sampling, camMat);
+	    localDiffMap = getDiffMap(refHyps[h], estObj, camPtsMap, sampling);
 	}
     }
 
