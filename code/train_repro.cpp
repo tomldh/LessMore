@@ -87,6 +87,12 @@ int main(int argc, const char* argv[])
         std::vector<cv::Mat_<cv::Vec3f>> imgMaps;
         jp::img_coord_t estObj = getCoordImg(imgBGR, sampling, imgMaps, true, stateRGB);
 
+        jp::img_coord_t camPts;
+		jp::img_coord_t camPtsMap;
+
+		trainingDataset.getCamPts(imgID, camPts);
+		camPtsMap = getCamPtsMap(camPts, sampling);
+
         std::cout << BLUETEXT("Calculating gradients wrt projection error.") << std::endl;
         StopWatch stopW;
 
@@ -97,11 +103,14 @@ int main(int argc, const char* argv[])
         for(unsigned x = 0; x < sampling.cols; x++)
         for(unsigned y = 0; y < sampling.rows; y++)
         {
-            cv::Point2f imgPt = sampling(y, x);
+        	if (!jp::onObj(camPtsMap(y, x)))
+				continue;
+
+            cv::Point3f imgdPt(camPtsMap(y, x));
             cv::Point3f objPt(estObj(y, x));
 
-            loss += project(imgPt, objPt, hypGT, camMat);
-            cv::Mat_<double> dNdO = dProjectdObj(imgPt, objPt, hypGT, camMat);
+            loss += transformErr(imgdPt, objPt, hypGT);
+            cv::Mat_<double> dNdO = dTransformdObj(imgdPt, objPt, hypGT);
 
             int dIdx = y * sampling.cols + x;
             dNdO.copyTo(dLoss_dObj.row(dIdx));

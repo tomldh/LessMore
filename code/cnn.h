@@ -930,6 +930,32 @@ float project(const cv::Point2f& pt, const cv::Point3f& obj, const jp::cv_trans_
 }
 
 /**
+ * @brief Transform a 3D point into the camera coordinate an measures the euclidean error.
+ * @param pt Ground truth 3D location in camera coordinate.
+ * @param obj 3D point.
+ * @param hyp Pose estimate.
+ * @return Euclidean error in meter.
+ */
+float transformErr(const cv::Point3f& pt, const cv::Point3f& obj, const jp::cv_trans_t hyp)
+{
+    //transform point
+    cv::Mat objMat = cv::Mat(obj);
+    objMat.convertTo(objMat, CV_64F);
+
+    cv::Mat rot;
+    cv::Rodrigues(hyp.first, rot);
+
+    objMat = rot * objMat + hyp.second;
+
+    cv::Point3d objPt(objMat.at<double>(0, 0), objMat.at<double>(1, 0), objMat.at<double>(2, 0));
+
+    //std::cout << "Projected position: " << px << ", " << py << std::endl;
+
+    // return error
+    return std::min(std::sqrt((pt.x - objPt.x) * (pt.x - objPt.x) + (pt.y - objPt.y) * (pt.y - objPt.y) + (pt.z - objPt.z) * (pt.z - objPt.z)), CNN_OBJ_MAXINPUT);
+}
+
+/**
  * @brief Calculates the Jacobean of the projection function w.r.t the given 3D point, ie. the function has the form 3 -> 1
  * @param pt Ground truth 2D location.
  * @param obj 3D point.
@@ -988,6 +1014,52 @@ cv::Mat_<double> dProjectdObj(const cv::Point2f& pt, const cv::Point3f& obj, con
     jacobean(0, 1) = dy;
     jacobean(0, 2) = dz;
     
+    return jacobean;
+}
+
+/**
+ * @brief Calculates the Jacobean of the transform function w.r.t the given 3D point, ie. the function has the form 3 -> 1
+ * @param pt Ground truth 3D location in camera coordinate.
+ * @param obj 3D point.
+ * @param hyp Pose estimate.
+ * @return 1x3 Jacobean matrix of partial derivatives.
+ */
+cv::Mat_<double> dTransformdObj(const cv::Point3f& pt, const cv::Point3f& obj, const jp::cv_trans_t hyp)
+{
+    //transform point
+    cv::Mat objMat = cv::Mat(obj);
+    objMat.convertTo(objMat, CV_64F);
+
+    cv::Mat rot;
+    cv::Rodrigues(hyp.first, rot);
+
+    objMat = rot * objMat + hyp.second;
+
+    cv::Point3d objPt(objMat.at<double>(0, 0), objMat.at<double>(1, 0), objMat.at<double>(2, 0));
+
+    // calculate error
+    double err = std::sqrt((pt.x - objPt.x) * (pt.x - objPt.x) + (pt.y - objPt.y) * (pt.y - objPt.y) + (pt.z - objPt.z) * (pt.z - objPt.z));
+
+    // early out if projection error is above threshold
+    if(err > CNN_OBJ_MAXINPUT)
+	return cv::Mat_<double>::zeros(1, 3);
+
+    err += EPS; // avoid dividing by zero
+
+    // derivative in x direction of obj coordinate
+    double dx = 0.5 / err * (2 * (pt.x - objPt.x) * -rot.at<double>(0, 0) + 2 * (pt.y - objPt.y) * -rot.at<double>(1, 0) + 2 * (pt.z - objPt.z) * -rot.at<double>(2, 0));
+
+    // derivative in x direction of obj coordinate
+    double dy = 0.5 / err * (2 * (pt.x - objPt.x) * -rot.at<double>(0, 1) + 2 * (pt.y - objPt.y) * -rot.at<double>(1, 1) + 2 * (pt.z - objPt.z) * -rot.at<double>(2, 1));
+
+    // derivative in x direction of obj coordinate
+    double dz = 0.5 / err * (2 * (pt.x - objPt.x) * -rot.at<double>(0, 2) + 2 * (pt.y - objPt.y) * -rot.at<double>(1, 2) + 2 * (pt.z - objPt.z) * -rot.at<double>(2, 2));
+
+    cv::Mat_<double> jacobean(1, 3);
+    jacobean(0, 0) = dx;
+    jacobean(0, 1) = dy;
+    jacobean(0, 2) = dz;
+
     return jacobean;
 }
 
