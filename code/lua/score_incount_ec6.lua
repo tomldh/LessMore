@@ -18,7 +18,7 @@ function loadModel(t, outW, outH)
 
   -- position and softness of inlier threshold
   inlierThresh = t
-  inlierSoft = 0.5 -- sigmoid softness (beta)
+  inlierSoft = 50 -- sigmoid softness (beta)
   etarget = 6 -- target entropy
 
   print('TORCH: Inlier threshold: ' .. inlierThresh)

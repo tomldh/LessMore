@@ -177,30 +177,19 @@ int main(int argc, const char* argv[])
                 }
             }
 
-            if(imgdPts.empty())
+            if(imgdPts.size() < 3)
                 continue;
 
-            //assemble the jacobean of the refinement residuals
-            cv::Mat_<double> jacobeanR = cv::Mat_<double> ::zeros(objPts.size(), 6);
-            cv::Mat_<double> dNdP(1, 2);
-            cv::Mat_<double> dNdH(1, 6);
+            jp::cv_trans_t cvHypDummy;
+            cv::Mat_<double> dHdO;
+            kabsch(imgdPts, objPts, cvHypDummy, dHdO);
+            if (dHdO.empty())
+            	dKabschFD(imgdPts, objPts, dHdO);
 
             for(int ptIdx = 0; ptIdx < objPts.size(); ptIdx++)
             {
-                dNdH = dTransformdHyp(imgdPts[ptIdx], objPts[ptIdx], refHyps[h]);
-                dNdH.copyTo(jacobeanR.row(ptIdx));
-            }
-
-            //calculate the pseudo inverse
-            jacobeanR = - (jacobeanR.t() * jacobeanR).inv() * jacobeanR.t();
-
-            for(int ptIdx = 0; ptIdx < objPts.size(); ptIdx++)
-            {
-                cv::Mat_<double> dNdO = dTransformdObj(imgdPts[ptIdx], objPts[ptIdx], refHyps[h]);
-                dNdO = jacobeanR.col(ptIdx) * dNdO;
-
                 int dIdx = srcPts[ptIdx].y * sampling.cols * 3 + srcPts[ptIdx].x * 3;
-                dNdO.copyTo(dHyp_dObjs[h].colRange(dIdx, dIdx + 3));
+                dHdO.colRange(ptIdx, ptIdx+3).copyTo(dHyp_dObjs[h].colRange(dIdx, dIdx + 3));
             }
         }
 
