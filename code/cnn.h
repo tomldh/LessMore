@@ -1284,11 +1284,11 @@ void dScore(
         if(cv::norm(dDiffMaps[h]) < EPS) continue;
 
         // accumulate derivate of score wrt the object coordinates that are used to calculate the pose
-        cv::Mat_<double> supportPointGradients = cv::Mat_<double>::zeros(1, 12);
+        cv::Mat_<double> supportPointGradients = cv::Mat_<double>::zeros(1, 9);
 
         cv::Mat_<double> dHdO;
         jp::cv_trans_t cvHyp;
-        kabsch(imgdPts[h], objPts[h], cvHyp, dHdO); // 6x12
+        kabsch(imgdPts[h], objPts[h], cvHyp, dHdO);
         if (dHdO.empty())
         	dKabschFD(imgdPts[h], objPts[h], dHdO);
 
@@ -1453,7 +1453,7 @@ void processImage(
 	sampledPoints[h].clear();
 	localImgPts[h].clear();// to-be-deleted
 
-        for(int j = 0; j < 4; j++)
+        for(int j = 0; j < 3; j++)
 	{
             // 2D location in the subsampled image
 	    int x = irand(0, estObj.cols);
@@ -1556,7 +1556,7 @@ void processImage(
 		}
             }
 
-            if(localImgdPts.size() < 4)
+            if(localImgdPts.size() < 3)
                 break;
 
             // recalculate pose
