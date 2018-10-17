@@ -1430,6 +1430,7 @@ void processImage(
     double& tErr,
     double& rotErr,
     int& hypIdx,
+	std::vector<cv::Mat_<double>>& dHdOs,
     bool training = true)
 {
     std::cout << BLUETEXT("Sampling " << objHyps << " hypotheses.") << std::endl;
@@ -1437,6 +1438,7 @@ void processImage(
 
     sampledPoints.resize(objHyps);    // keep track of the points each hypothesis is sampled from
     refHyps.resize(objHyps);
+    dHdOs.resize(objHyps);
     std::vector<std::vector<cv::Point3f>> imgdPts(objHyps);
     std::vector<std::vector<cv::Point3f>> objPts(objHyps);
     std::vector<std::vector<cv::Point2f>> localImgPts(objHyps);
@@ -1563,14 +1565,18 @@ void processImage(
 	    jp::cv_trans_t hypUpdate;
 	    hypUpdate.first = refHyps[h].first.clone();
 	    hypUpdate.second = refHyps[h].second.clone();
+	    cv::Mat_<double> dHdO;
 
-            kabsch(localImgdPts, localObjPts, hypUpdate);
+            kabsch(localImgdPts, localObjPts, hypUpdate, dHdO);
+            if (dHdO.empty())
+            	dKabschFD(localImgdPts, localObjPts, dHdO);
 
             if(maxLoss(hypUpdate, refHyps[h]) < convergenceThresh)
                 break; // convergned
 
 	    refHyps[h] = hypUpdate;
             inlierMaps[h] = localInlierMap;
+            dHdOs[h] = dHdO;
 
 	    // recalculate pose errors
 	    localDiffMap = getDiffMap(refHyps[h], estObj, camPtsMap, sampling);

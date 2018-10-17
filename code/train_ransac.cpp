@@ -39,6 +39,17 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "lua_calls.h"
 #include "cnn.h"
 
+/*
+ * @brief Computes mean squared differences of two matrices
+ */
+double compareMatrix(cv::Mat A, cv::Mat B)
+{
+	cv::Mat_<double> diff, diff_sq;
+	cv::subtract(A, B, diff);
+	cv::pow(diff, 2, diff_sq);
+	return cv::sum(diff_sq)[0] / diff_sq.total();
+}
+
 int main(int argc, const char* argv[])
 {
     // read parameters
@@ -115,6 +126,7 @@ int main(int argc, const char* argv[])
         bool correct;
 
         std::vector<jp::cv_trans_t> refHyps;
+        std::vector<cv::Mat_<double>> dHdOs;
         std::vector<double> sfScores;
         std::vector<std::vector<cv::Point2i>> sampledPoints;
         std::vector<double> losses;
@@ -143,7 +155,8 @@ int main(int argc, const char* argv[])
             inlierMaps,
             tErr,
             rotErr,
-            hypIdx);
+            hypIdx,
+			dHdOs);
 
         // === doing the backward pass ====================================================================
 
@@ -180,20 +193,24 @@ int main(int argc, const char* argv[])
             if(imgdPts.size() < 3)
                 continue;
 
-            /*
+
             jp::cv_trans_t cvHypDummy;
             cv::Mat_<double> dHdO;
             kabsch(imgdPts, objPts, cvHypDummy, dHdO);
             if (dHdO.empty())
             	dKabschFD(imgdPts, objPts, dHdO);
 
+            double errJac = compareMatrix(dHdO, dHdOs[h]);
+
+            std::cout << BLUETEXT("Jacobian error: " << errJac) << std::endl;
+
             for(int ptIdx = 0; ptIdx < objPts.size(); ptIdx++)
             {
                 int dIdx = srcPts[ptIdx].y * sampling.cols * 3 + srcPts[ptIdx].x * 3;
                 dHdO.colRange(ptIdx, ptIdx+3).copyTo(dHyp_dObjs[h].colRange(dIdx, dIdx + 3));
             }
-            */
 
+            /*
             cv::Mat_<double> jacobeanR = cv::Mat_<double> ::zeros(objPts.size(), 6);
             cv::Mat_<double> dNdP(1, 2);
             cv::Mat_<double> dNdH(1, 6);
@@ -214,6 +231,7 @@ int main(int argc, const char* argv[])
             	int dIdx = srcPts[ptIdx].y * sampling.cols * 3 + srcPts[ptIdx].x * 3;
             	dNdO.copyTo(dHyp_dObjs[h].colRange(dIdx, dIdx + 3));
             }
+            */
 
         }
 

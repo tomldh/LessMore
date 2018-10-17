@@ -114,6 +114,7 @@ int main(int argc, const char* argv[])
 
         // process frame (same function used in training, hence most of the variables below are not used here), see method documentation for parameter explanation
         std::vector<jp::cv_trans_t> refHyps;
+        std::vector<cv::Mat_<double>> dHdOs;
         std::vector<double> sfScores;
         std::vector<std::vector<cv::Point2i>> sampledPoints;
         std::vector<double> losses;
@@ -147,6 +148,7 @@ int main(int argc, const char* argv[])
             tErr,
             rotErr,
             hypIdx,
+			dHdOs,
             false);
 
         avgCorrect += correct;
