@@ -29,6 +29,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <iostream>
 #include <fstream>
+#include <sstream>
 
 #include "properties.h"
 #include "thread_rand.h"
@@ -42,12 +43,22 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 /*
  * @brief Computes mean squared differences of two matrices
  */
-double compareMatrix(cv::Mat A, cv::Mat B)
+double compareMatrix(cv::Mat A, cv::Mat B, bool usefd)
 {
 	cv::Mat_<double> diff, diff_sq;
 	cv::subtract(A, B, diff);
 	cv::pow(diff, 2, diff_sq);
-	return cv::sum(diff_sq)[0] / diff_sq.total();
+	double minval, maxval, minvalA, maxvalA, minvalB, maxvalB, msqd;
+	std::stringstream ss;
+	msqd = cv::sum(diff_sq)[0] / diff_sq.total();
+	cv::minMaxLoc(A, &minvalA, &maxvalA);
+	cv::minMaxLoc(B, &minvalB, &maxvalB);
+	cv::minMaxLoc(diff_sq, &minval, &maxval);
+	ss << "[compareMatrix] " << msqd << ", " << usefd << ", " << minval << ", " << maxval << ", " << minvalA << ", " << maxvalA << ", " << minvalB << ", " << maxvalB << std::endl;
+	if (msqd >= 1e-4)
+		std::cout << ss.str() << std::flush;
+	assert(msqd < 1e-4);
+	return msqd;
 }
 
 int main(int argc, const char* argv[])
@@ -95,6 +106,7 @@ int main(int argc, const char* argv[])
         std::cout << YELLOWTEXT("Round " << round << " of " << trainingRounds << ".") << std::endl;
 
         int imgID = irand(0, trainingDataset.size());
+        std::cout << BLUETEXT("Current image: " << imgID) << std::endl;
 
         // load training image
         jp::img_bgr_t imgBGR;
@@ -198,9 +210,13 @@ int main(int argc, const char* argv[])
 
             jp::cv_trans_t cvHypDummy;
             cv::Mat_<double> dHdO;
+            bool useFD = false;
             kabsch(imgdPts, objPts, cvHypDummy, dHdO);
             if (dHdO.empty())
+            {
+            	useFD = true;
             	dKabschFD(imgdPts, objPts, dHdO);
+            }
 
         //    double errJac = compareMatrix(dHdO, dHdOs[h]);
 
@@ -234,10 +250,8 @@ int main(int argc, const char* argv[])
             	dNdO.copyTo(dHyp_dObjs2[h].colRange(dIdx, dIdx + 3));
             }
             
-	            double errJac = compareMatrix(dHyp_dObjs2[h], dHyp_dObjs[h]);
+	        double errJac = compareMatrix(dHyp_dObjs2[h], dHyp_dObjs[h], useFD);
 
-            //std::cout << BLUETEXT("Jacobian error: " << errJac) << std::endl;
-	assert(errJac < 1e-4);
 
         }
 
