@@ -38,7 +38,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include "lua_calls.h"
 #include "cnn.h"
-
+#include <assert.h>
 /*
  * @brief Computes mean squared differences of two matrices
  */
@@ -165,12 +165,14 @@ int main(int argc, const char* argv[])
 
         // precalculate gradients per of hypotheis wrt object coordinates
         std::vector<cv::Mat_<double>> dHyp_dObjs(refHyps.size());
+ std::vector<cv::Mat_<double>> dHyp_dObjs2(refHyps.size());
 
         #pragma omp parallel for
         for(unsigned h = 0; h < refHyps.size(); h++)
         {
             // differentiate refinement around optimum found in last optimization iteration
             dHyp_dObjs[h] = cv::Mat_<double>::zeros(6, sampling.rows * sampling.cols * 3);
+		dHyp_dObjs2[h] = cv::Mat_<double>::zeros(6, sampling.rows * sampling.cols * 3);
 
             if(sfScores[h] < EPS) continue; // skip hypothesis with no impact on expectation
 
@@ -200,17 +202,17 @@ int main(int argc, const char* argv[])
             if (dHdO.empty())
             	dKabschFD(imgdPts, objPts, dHdO);
 
-            double errJac = compareMatrix(dHdO, dHdOs[h]);
+        //    double errJac = compareMatrix(dHdO, dHdOs[h]);
 
-            std::cout << BLUETEXT("Jacobian error: " << errJac) << std::endl;
-
+          //  std::cout << BLUETEXT("Jacobian error: " << errJac) << std::endl;
+	//std::cout << dHdO.at<double>(1,1) << " " << dHdO.at<double>(5,5) << std::endl;
             for(int ptIdx = 0; ptIdx < objPts.size(); ptIdx++)
             {
                 int dIdx = srcPts[ptIdx].y * sampling.cols * 3 + srcPts[ptIdx].x * 3;
                 dHdO.colRange(ptIdx, ptIdx+3).copyTo(dHyp_dObjs[h].colRange(dIdx, dIdx + 3));
             }
 
-            /*
+            
             cv::Mat_<double> jacobeanR = cv::Mat_<double> ::zeros(objPts.size(), 6);
             cv::Mat_<double> dNdP(1, 2);
             cv::Mat_<double> dNdH(1, 6);
@@ -229,9 +231,13 @@ int main(int argc, const char* argv[])
             	dNdO = jacobeanR.col(ptIdx) * dNdO;
 
             	int dIdx = srcPts[ptIdx].y * sampling.cols * 3 + srcPts[ptIdx].x * 3;
-            	dNdO.copyTo(dHyp_dObjs[h].colRange(dIdx, dIdx + 3));
+            	dNdO.copyTo(dHyp_dObjs2[h].colRange(dIdx, dIdx + 3));
             }
-            */
+            
+	            double errJac = compareMatrix(dHyp_dObjs2[h], dHyp_dObjs[h]);
+
+            //std::cout << BLUETEXT("Jacobian error: " << errJac) << std::endl;
+	assert(errJac < 1e-4);
 
         }
 
