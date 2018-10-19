@@ -189,7 +189,7 @@ int main(int argc, const char* argv[])
             for(int ptIdx = 0; ptIdx < objPts.size(); ptIdx++)
             {
                 int dIdx = srcPts[ptIdx].y * sampling.cols * 3 + srcPts[ptIdx].x * 3;
-                dHdO.colRange(ptIdx, ptIdx+3).copyTo(dHyp_dObjs[h].colRange(dIdx, dIdx + 3));
+                dHdO.colRange(ptIdx*3, ptIdx*3+3).copyTo(dHyp_dObjs[h].colRange(dIdx, dIdx + 3));
             }
         }
 
